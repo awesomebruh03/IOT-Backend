@@ -145,3 +145,9 @@ This document provides a detailed overview of all the API endpoints in the appli
 *   **Description:** This endpoint allows a client application to connect and receive real-time AI prediction broadcasts.
 *   **Receives:** Nothing from the client. The connection is kept alive by the client sending any text message.
 *   **Sends:** JSON prediction data broadcasted from the `/iot/ws/audio` endpoint.
+
+
+
+
+/simulation/trigger
+{"action": "start"}

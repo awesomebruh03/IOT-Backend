@@ -17,7 +17,7 @@ NEON_URI = os.getenv("NEON_URI")
 if not NEON_URI:
     raise ValueError("NEON_URI environment variable not set")
 
-engine = create_async_engine(NEON_URI, echo=True)
+engine = create_async_engine(NEON_URI.replace("postgresql://", "postgresql+psycopg://"), echo=True)
 AsyncSessionLocal = sessionmaker(
     bind=engine, class_=AsyncSession, expire_on_commit=False
 )
@@ -50,11 +50,16 @@ async def init_db():
         await conn.run_sync(Base.metadata.create_all)
 
 # --- Redis Configuration ---
-REDIS_ENDPOINT = os.getenv("REDIS_ENDPOINT")
-if not REDIS_ENDPOINT:
-    raise ValueError("REDIS_ENDPOINT environment variable not set")
+REDIS_USER_NAME = os.getenv("REDIS_USER_NAME")
+REDIS_PASSWORD = os.getenv("REDIS_PASSWORD")
+CONNECTION_DETAILS = os.getenv("CONNECTION_DETAILS")
 
-redis_client = redis.from_url(REDIS_ENDPOINT, decode_responses=True)
+if not all([REDIS_USER_NAME, REDIS_PASSWORD, CONNECTION_DETAILS]):
+    raise ValueError("Redis connection details (REDIS_USER_NAME, REDIS_PASSWORD, CONNECTION_DETAILS) are not fully set in environment variables")
+
+redis_url = f"redis://{REDIS_USER_NAME}:{REDIS_PASSWORD}@{CONNECTION_DETAILS}"
+
+redis_client = redis.from_url(redis_url, decode_responses=True)
 
 # --- Data Persistence Logic ---
 async def save_prediction(prediction_data: dict):
