@@ -17,7 +17,11 @@ NEON_URI = os.getenv("NEON_URI")
 if not NEON_URI:
     raise ValueError("NEON_URI environment variable not set")
 
-engine = create_async_engine(NEON_URI.replace("postgresql://", "postgresql+psycopg://"), echo=True)
+engine = create_async_engine(
+    NEON_URI.replace("postgresql://", "postgresql+psycopg://"),
+    echo=True,
+    pool_recycle=1800  # Recycle connections every 30 minutes
+)
 AsyncSessionLocal = sessionmaker(
     bind=engine, class_=AsyncSession, expire_on_commit=False
 )
@@ -46,7 +50,6 @@ class SensorReading(Base):
 async def init_db():
     """Initializes the database and creates tables."""
     async with engine.begin() as conn:
-        # This will create the tables if they do not exist
         await conn.run_sync(Base.metadata.create_all)
 
 # --- Redis Configuration ---
@@ -55,17 +58,15 @@ REDIS_PASSWORD = os.getenv("REDIS_PASSWORD")
 CONNECTION_DETAILS = os.getenv("CONNECTION_DETAILS")
 
 if not all([REDIS_USER_NAME, REDIS_PASSWORD, CONNECTION_DETAILS]):
-    raise ValueError("Redis connection details (REDIS_USER_NAME, REDIS_PASSWORD, CONNECTION_DETAILS) are not fully set in environment variables")
+    raise ValueError("Redis connection details are not fully set")
 
 redis_url = f"redis://{REDIS_USER_NAME}:{REDIS_PASSWORD}@{CONNECTION_DETAILS}"
 
 redis_client = redis.from_url(redis_url, decode_responses=True)
 
 # --- Data Persistence Logic ---
-async def save_prediction(prediction_data: dict):
-    """
-    Saves a prediction to both PostgreSQL and Redis.
-    """
+async def save_prediction(prediction_data: dict, session: AsyncSession = None):
+    """Saves a prediction to PostgreSQL and Redis."""
     label = prediction_data.get("label")
     confidence = prediction_data.get("confidence")
 
@@ -73,18 +74,20 @@ async def save_prediction(prediction_data: dict):
         print("Skipping save: prediction data is incomplete.")
         return
 
-    # 1. Save to PostgreSQL for long-term storage
-    async with AsyncSessionLocal() as session:
-        async with session.begin():
-            db_prediction = Prediction(
-                label=label,
-                confidence=float(confidence),
-                timestamp=datetime.utcnow()
-            )
-            session.add(db_prediction)
-        await session.commit()
+    db_prediction = Prediction(
+        label=label,
+        confidence=float(confidence),
+        timestamp=datetime.utcnow()
+    )
 
-    # 2. Save to Redis for short-term caching
+    if session:
+        session.add(db_prediction)
+    else:
+        async with AsyncSessionLocal() as new_session:
+            async with new_session.begin():
+                new_session.add(db_prediction)
+
+    # Save to Redis
     try:
         redis_payload = {
             "label": label,
@@ -96,10 +99,8 @@ async def save_prediction(prediction_data: dict):
     except Exception as e:
         print(f"Error saving prediction to Redis: {e}")
 
-async def save_sensor_data(sensor_data: dict):
-    """
-    Saves a generic sensor reading to both PostgreSQL and Redis.
-    """
+async def save_sensor_data(sensor_data: dict, session: AsyncSession = None):
+    """Saves a generic sensor reading to PostgreSQL and Redis."""
     sensor_id = sensor_data.get("sensor_id")
     value = sensor_data.get("value")
 
@@ -107,18 +108,20 @@ async def save_sensor_data(sensor_data: dict):
         print("Skipping save: sensor data is incomplete.")
         return
 
-    # 1. Save to PostgreSQL for long-term storage
-    async with AsyncSessionLocal() as session:
-        async with session.begin():
-            db_reading = SensorReading(
-                sensor_id=sensor_id,
-                value=str(value), # Store value as string for flexibility
-                timestamp=datetime.utcnow()
-            )
-            session.add(db_reading)
-        await session.commit()
+    db_reading = SensorReading(
+        sensor_id=sensor_id,
+        value=str(value),
+        timestamp=datetime.utcnow()
+    )
 
-    # 2. Save to Redis for short-term caching
+    if session:
+        session.add(db_reading)
+    else:
+        async with AsyncSessionLocal() as new_session:
+            async with new_session.begin():
+                new_session.add(db_reading)
+
+    # Save to Redis
     try:
         redis_payload = {
             "sensor_id": sensor_id,
@@ -131,7 +134,6 @@ async def save_sensor_data(sensor_data: dict):
         print(f"Error saving sensor data to Redis: {e}")
 
 # --- Data Retrieval Logic ---
-
 async def get_predictions(limit: int = 100):
     """Retrieve predictions from PostgreSQL."""
     async with AsyncSessionLocal() as session:
